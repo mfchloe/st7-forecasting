@@ -24,7 +24,7 @@ files_weather = [
     "2022 weather data.xlsx",
     "2021 weather data.xlsx",
     "2020 weather data.xlsx",
-    "2019 weather data.xlsx"
+    "2019 weather data.xlsx",
     "2018 weather data.xlsx"
     ]
 
