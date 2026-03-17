@@ -7,9 +7,9 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 
-
+# ==========================================
 # 1. Reversible Instance Normalization (RevIN)
-
+# ==========================================
 class RevIN(nn.Module):
     def __init__(self, num_features: int, eps=1e-5, affine=True):
         """
@@ -58,9 +58,9 @@ class RevIN(nn.Module):
         x = x + self.mean
         return x
 
-
+# ==========================================
 # 2. LSTM with RevIN and MC Dropout
-
+# ==========================================
 class LSTMWithRevIN(nn.Module):
     def __init__(self, num_features, hidden_size, num_layers, dropout_rate=0.2, target_idx=0):
         super(LSTMWithRevIN, self).__init__()
@@ -112,9 +112,9 @@ class LSTMWithRevIN(nn.Module):
         
         return pred.squeeze(1).squeeze(1) if pred.dim() > 2 else pred.squeeze(1) # shape: (batch)
 
-
+# ==========================================
 # 3. Data Processing & Dataset
-
+# ==========================================
 class TimeSeriesDataset(Dataset):
     def __init__(self, data, context_length, target_idx):
         """
@@ -133,6 +133,125 @@ class TimeSeriesDataset(Dataset):
         x = self.data[idx : idx + self.context_length, :]
         y = self.data[idx + self.context_length, self.target_idx]
         return x, y
+
+column_translation_weather = {
+    "ID OMM station": "WMO_Station_ID",
+    "Date": "Date",
+    "Pression au niveau mer": "Sea_Level_Pressure_hPa",
+    "Variation de pression en 3 heures": "Pressure_Change_3h_hPa",
+    "Type de tendance barométrique": "Barometric_Trend_Type",
+    "Direction du vent moyen 10 mn": "Wind_Direction_10min_deg",
+    "Vitesse du vent moyen 10 mn": "Wind_Speed_10min_mps",
+    "Température": "Temperature_K",
+    "Température (°C)": "Temperature_C",
+    "Point de rosée": "Dew_Point_C",
+    "Humidité": "Relative_Humidity_percent",
+    "Visibilité horizontale": "Horizontal_Visibility_m",
+    "Temps présent": "Current_Weather",
+    "Temps passé 1": "Past_Weather_1",
+    "Temps passé 2": "Past_Weather_2",
+    "Nebulosité totale": "Total_Cloud_Cover_okta",
+    "Nébulosité des nuages de l' étage inférieur": "Low_Level_Cloud_Cover_okta",
+    "Hauteur de la base des nuages de l'étage inférieur": "Low_Cloud_Base_Height_m",
+    "Type des nuages de l'étage inférieur": "Low_Cloud_Type",
+    "Type des nuages de l'étage moyen": "Mid_Cloud_Type",
+    "Type des nuages de l'étage supérieur": "High_Cloud_Type",
+    "Pression station": "Station_Pressure_hPa",
+    "Niveau barométrique": "Barometric_Level",
+    "Géopotentiel": "Geopotential_m2s2",
+    "Variation de pression en 24 heures": "Pressure_Change_24h_hPa",
+    "Température minimale sur 12 heures": "Min_Temperature_12h_C",
+    "Température minimale sur 24 heures": "Min_Temperature_24h_C",
+    "Température maximale sur 12 heures": "Max_Temperature_12h_C",
+    "Température maximale sur 24 heures": "Max_Temperature_24h_C",
+    "Température minimale du sol sur 12 heures": "Min_Ground_Temperature_12h_C",
+    "Méthode de mesure Température du thermomètre mouillé": "Wet_Bulb_Measurement_Method",
+    "Température du thermomètre mouillé": "Wet_Bulb_Temperature_C",
+    "Rafale sur les 10 dernières minutes": "Wind_Gust_Last10min_mps",
+    "Rafales sur une période": "Wind_Gust_Period_mps",
+    "Periode de mesure de la rafale": "Gust_Measurement_Period",
+    "Etat du sol": "Ground_State",
+    "Hauteur totale de la couche de neige, glace, autre au sol": "Total_Snow_Ice_Depth_cm",
+    "Hauteur de la neige fraîche": "Fresh_Snow_Depth_cm",
+    "Periode de mesure de la neige fraiche": "Fresh_Snow_Measurement_Period",
+    "Précipitations dans la dernière heure": "Precipitation_Last1h_mm",
+    "Précipitations dans les 3 dernières heures": "Precipitation_Last3h_mm",
+    "Précipitations dans les 6 dernières heures": "Precipitation_Last6h_mm",
+    "Précipitations dans les 12 dernières heures": "Precipitation_Last12h_mm",
+    "Précipitations dans les 24 dernières heures": "Precipitation_Last24h_mm",
+    "Phénomène spécial 1": "Special_Weather_Event_1",
+    "Phénomène spécial 2": "Special_Weather_Event_2",
+    "Phénomène spécial 3": "Special_Weather_Event_3",
+    "Phénomène spécial 4": "Special_Weather_Event_4",
+    "Nébulosité couche nuageuse 1": "Cloud_Layer1_Cover_okta",
+    "Type nuage 1": "Cloud_Layer1_Type",
+    "Hauteur de base 1": "Cloud_Layer1_Base_Height_m",
+    "Nébulosité couche nuageuse 2": "Cloud_Layer2_Cover_okta",
+    "Type nuage 2": "Cloud_Layer2_Type",
+    "Hauteur de base 2": "Cloud_Layer2_Base_Height_m",
+    "Nébulosité couche nuageuse 3": "Cloud_Layer3_Cover_okta",
+    "Type nuage 3": "Cloud_Layer3_Type",
+    "Hauteur de base 3": "Cloud_Layer3_Base_Height_m",
+    "Nébulosité couche nuageuse 4": "Cloud_Layer4_Cover_okta",
+    "Type nuage 4": "Cloud_Layer4_Type",
+    "Hauteur de base 4": "Cloud_Layer4_Base_Height_m",
+    "Nom": "Station_Name",
+    "Coordonnees": "Coordinates",
+    "Latitude": "Latitude",
+    "Longitude": "Longitude",
+    "Altitude": "Altitude_m",
+    "communes (name)": "Municipality_Name",
+    "communes (code)": "Municipality_Code",
+    "EPCI (name)": "Intermunicipal_Group_Name",
+    "EPCI (code)": "Intermunicipal_Group_Code",
+    "department (name)": "Department_Name",
+    "department (code)": "Department_Code",
+    "region (name)": "Region_Name",
+    "region (code)": "Region_Code",
+    "mois_de_l_annee": "Month_of_Year"
+}
+
+def load_and_clean_weather(file_path):
+    if file_path.endswith('.csv'):
+        df = pd.read_csv(file_path, sep=';')
+    else:
+        df = pd.read_excel(file_path)
+
+    df.columns = df.columns.str.strip()
+    df = df.loc[:, ~df.columns.duplicated()]
+    df.rename(columns=column_translation_weather, inplace=True)
+    df.replace("ND", np.nan, inplace=True)
+
+    df["Datetime"] = pd.to_datetime(
+        df["Date"],
+        dayfirst=True,
+        errors="coerce",
+        utc=True
+    ).dt.tz_localize(None)
+
+    df["Temperature_C"] = pd.to_numeric(df.get("Temperature_C", df.get('Température (°C)')), errors="coerce")
+    df["Altitude_m"] = pd.to_numeric(df.get("Altitude_m", df.get('Altitude')), errors="coerce")
+
+    # Keep only relevant variables if they exist
+    cols_to_keep = ["Datetime", "WMO_Station_ID", "Temperature_C", "Altitude_m", "Latitude", "Longitude"]
+    existing_cols = [c for c in cols_to_keep if c in df.columns]
+    
+    df = df[existing_cols]
+    
+    if "Datetime" in df.columns and "Temperature_C" in df.columns:
+        df = df.dropna(subset=["Datetime", "Temperature_C"])
+
+    if "Datetime" in df.columns:
+        df = df.sort_values("Datetime").reset_index(drop=True)
+        # Time features
+        df["Hour"] = df["Datetime"].dt.hour
+        df["DayOfWeek"] = df["Datetime"].dt.dayofweek
+        df["Month"] = df["Datetime"].dt.month
+        df["DayOfYear"] = df["Datetime"].dt.dayofyear
+        df["Year"] = df["Datetime"].dt.year
+        df["IsWeekend"] = df["DayOfWeek"].isin([5, 6]).astype(int)
+
+    return df
 
 def load_and_preprocess_data(rte_path=None, weather_path=None, demo=False):
     """
@@ -154,47 +273,41 @@ def load_and_preprocess_data(rte_path=None, weather_path=None, demo=False):
         })
         return df, 0 # target_idx is 0 ('consumption')
     
- 
+    # -------------------------------------------------------------
     # 1. Load RTE data with pandas
     try:
         rte_df = pd.read_csv(rte_path, sep=';', parse_dates=['Date', 'Heures'])
-        # Depending on rte data format, we might need robust parsing:
-        # e.g., combining Date and Heures into Datetime
         rte_df['Datetime'] = pd.to_datetime(rte_df['Date'].astype(str) + ' ' + rte_df['Heures'].astype(str), errors='coerce')
         rte_df.dropna(subset=['Datetime'], inplace=True)
     except Exception as e:
         print(f"Error parsing RTE data: {e}")
         return None, None
 
-    # 2. Load OMM data
+    # 2. Load OMM data using the custom clean function
     try:
-        weather_df = pd.read_csv(weather_path, sep=';', parse_dates=['Date'])
-        weather_df.rename(columns={'Date': 'Datetime'}, inplace=True)
+        # Load custom weather data
+        weather_df = load_and_clean_weather(weather_path)
     except Exception as e:
         print(f"Error parsing Weather data: {e}")
         return None, None
 
-    # 3. Merge on Datetime (e.g., hourly/3-hourly mapping)
-    # Often weather is 3-hourly and consumption is half-hourly -> resample to smooth it out (e.g. hourly)
+    # 3. Merge on Datetime
     rte_df.set_index('Datetime', inplace=True)
     weather_df.set_index('Datetime', inplace=True)
     
-    rte_hourly = rte_df.resample('1H').mean()
-    weather_hourly = weather_df.resample('1H').mean()
+    rte_hourly = rte_df.resample('1H').mean(numeric_only=True)
+    weather_hourly = weather_df.resample('1H').mean(numeric_only=True)
     
     merged_df = pd.merge(rte_hourly, weather_hourly, left_index=True, right_index=True, how='inner')
     
     # 4. Handle missing values
-    merged_df.interpolate(method='linear', limit_direction='forward', inplace=True)
-    merged_df.fillna(method='bfill', inplace=True)
+    merged_df = merged_df.interpolate(method='linear', limit_direction='forward')
+    merged_df = merged_df.bfill()
     
-    # Selecting the features dynamically if they exist. 
-    # Usually: RTE has "Consommation", Weather has "Température", "Humidité", etc.
-    # Below is a fallback logic to select numeric columns:
+    # Return numeric columns and locate target
     numeric_cols = merged_df.select_dtypes(include=[np.number]).columns.tolist()
     final_df = merged_df[numeric_cols]
     
-    # Assuming 'Consommation' or 'consumption' is our target index 0. Let's arrange it.
     target_col = None
     for col in final_df.columns:
         if 'consommation' in col.lower() or 'consumption' in col.lower():
@@ -202,16 +315,16 @@ def load_and_preprocess_data(rte_path=None, weather_path=None, demo=False):
             break
             
     if target_col is None:
-        target_col = final_df.columns[0] # Pick first if not found
+        target_col = final_df.columns[0]
         
     cols = [target_col] + [c for c in final_df.columns if c != target_col]
     final_df = final_df[cols]
     
     return final_df, 0
 
-
+# ==========================================
 # 4. Training and Prediction
-
+# ==========================================
 def train_model(model, train_loader, val_loader, num_epochs=20, lr=1e-3, device='cpu'):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -284,9 +397,9 @@ def predict_with_uncertainty(model, dataloader, num_samples=50, device='cpu'):
     
     return mean_preds, lower_bound, upper_bound, actuals
 
-
+# ==========================================
 # 5. Main Execution Block
-
+# ==========================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--demo', action='store_true', help='Run on synthetic data')
