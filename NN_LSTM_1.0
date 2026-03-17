@@ -7,9 +7,9 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 
-# ==========================================
+
 # 1. Reversible Instance Normalization (RevIN)
-# ==========================================
+
 class RevIN(nn.Module):
     def __init__(self, num_features: int, eps=1e-5, affine=True):
         """
@@ -58,9 +58,9 @@ class RevIN(nn.Module):
         x = x + self.mean
         return x
 
-# ==========================================
+
 # 2. LSTM with RevIN and MC Dropout
-# ==========================================
+
 class LSTMWithRevIN(nn.Module):
     def __init__(self, num_features, hidden_size, num_layers, dropout_rate=0.2, target_idx=0):
         super(LSTMWithRevIN, self).__init__()
@@ -112,9 +112,9 @@ class LSTMWithRevIN(nn.Module):
         
         return pred.squeeze(1).squeeze(1) if pred.dim() > 2 else pred.squeeze(1) # shape: (batch)
 
-# ==========================================
+
 # 3. Data Processing & Dataset
-# ==========================================
+
 class TimeSeriesDataset(Dataset):
     def __init__(self, data, context_length, target_idx):
         """
@@ -273,7 +273,7 @@ def load_and_preprocess_data(rte_path=None, weather_path=None, demo=False):
         })
         return df, 0 # target_idx is 0 ('consumption')
     
-    # -------------------------------------------------------------
+  
     # 1. Load RTE data with pandas
     try:
         rte_df = pd.read_csv(rte_path, sep=';', parse_dates=['Date', 'Heures'])
@@ -322,9 +322,9 @@ def load_and_preprocess_data(rte_path=None, weather_path=None, demo=False):
     
     return final_df, 0
 
-# ==========================================
+
 # 4. Training and Prediction
-# ==========================================
+
 def train_model(model, train_loader, val_loader, num_epochs=20, lr=1e-3, device='cpu'):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -397,9 +397,9 @@ def predict_with_uncertainty(model, dataloader, num_samples=50, device='cpu'):
     
     return mean_preds, lower_bound, upper_bound, actuals
 
-# ==========================================
+
 # 5. Main Execution Block
-# ==========================================
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--demo', action='store_true', help='Run on synthetic data')
