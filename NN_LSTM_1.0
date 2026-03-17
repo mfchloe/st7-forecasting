@@ -1,0 +1,374 @@
+import os
+import argparse
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+import matplotlib.pyplot as plt
+
+# ==========================================
+# 1. Reversible Instance Normalization (RevIN)
+# ==========================================
+class RevIN(nn.Module):
+    def __init__(self, num_features: int, eps=1e-5, affine=True):
+        """
+        :param num_features: the number of features or channels
+        :param eps: a value added for numerical stability
+        :param affine: if True, RevIN has learnable affine parameters
+        """
+        super(RevIN, self).__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.affine = affine
+        if self.affine:
+            self._init_params()
+
+    def forward(self, x, mode:str):
+        if mode == 'norm':
+            self._get_statistics(x)
+            x = self._normalize(x)
+        elif mode == 'denorm':
+            x = self._denormalize(x)
+        else: raise NotImplementedError
+        return x
+
+    def _init_params(self):
+        self.affine_weight = nn.Parameter(torch.ones(self.num_features))
+        self.affine_bias = nn.Parameter(torch.zeros(self.num_features))
+
+    def _get_statistics(self, x):
+        dim2reduce = tuple(range(1, x.ndim-1))
+        self.mean = torch.mean(x, dim=dim2reduce, keepdim=True).detach()
+        self.stdev = torch.sqrt(torch.var(x, dim=dim2reduce, keepdim=True, unbiased=False) + self.eps).detach()
+
+    def _normalize(self, x):
+        x = x - self.mean
+        x = x / self.stdev
+        if self.affine:
+            x = x * self.affine_weight
+            x = x + self.affine_bias
+        return x
+
+    def _denormalize(self, x):
+        if self.affine:
+            x = x - self.affine_bias
+            x = x / (self.affine_weight + self.eps*self.eps)
+        x = x * self.stdev
+        x = x + self.mean
+        return x
+
+# ==========================================
+# 2. LSTM with RevIN and MC Dropout
+# ==========================================
+class LSTMWithRevIN(nn.Module):
+    def __init__(self, num_features, hidden_size, num_layers, dropout_rate=0.2, target_idx=0):
+        super(LSTMWithRevIN, self).__init__()
+        self.revin_layer = RevIN(num_features, affine=True)
+        self.lstm = nn.LSTM(
+            input_size=num_features,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout_rate if num_layers > 1 else 0
+        )
+        self.dropout = nn.Dropout(dropout_rate)
+        # We predict a single value per time step (the target)
+        self.linear = nn.Linear(hidden_size, 1)
+        self.target_idx = target_idx # Index of the target variable in the feature array
+
+    def forward(self, x):
+        # x shape: (batch_size, seq_len, num_features)
+        
+        # 1. Normalize with RevIN
+        x_norm = self.revin_layer(x, 'norm')
+        
+        # 2. Extract specific stats for the target to denormalize later
+        # We only want to denormalize the prediction, which corresponds to target_idx
+        target_mean = self.revin_layer.mean[:, :, self.target_idx:self.target_idx+1]
+        target_stdev = self.revin_layer.stdev[:, :, self.target_idx:self.target_idx+1]
+        if self.revin_layer.affine:
+            target_weight = self.revin_layer.affine_weight[self.target_idx:self.target_idx+1]
+            target_bias = self.revin_layer.affine_bias[self.target_idx:self.target_idx+1]
+        
+        # 3. LSTM forward
+        out_lstm, _ = self.lstm(x_norm)
+        
+        # 4. Apply MC Dropout & Linear map
+        # We take the output of the last sequence step
+        out_last = out_lstm[:, -1, :]
+        out_drop = self.dropout(out_last)
+        pred = self.linear(out_drop) # shape: (batch, 1)
+        
+        # Reshape to (batch, 1, 1) to match denorm constraints dimension-wise
+        pred = pred.unsqueeze(1)
+        
+        # 5. Denormalize with RevIN manually for single target
+        if self.revin_layer.affine:
+            pred = pred - target_bias
+            pred = pred / (target_weight + self.revin_layer.eps**2)
+        pred = pred * target_stdev
+        pred = pred + target_mean
+        
+        return pred.squeeze(1).squeeze(1) if pred.dim() > 2 else pred.squeeze(1) # shape: (batch)
+
+# ==========================================
+# 3. Data Processing & Dataset
+# ==========================================
+class TimeSeriesDataset(Dataset):
+    def __init__(self, data, context_length, target_idx):
+        """
+        data: numpy array of shape (N, num_features)
+        context_length: number of past steps to use
+        target_idx: index of target feature
+        """
+        self.data = torch.FloatTensor(np.array(data, copy=True))
+        self.context_length = context_length
+        self.target_idx = target_idx
+        
+    def __len__(self):
+        return len(self.data) - self.context_length
+        
+    def __getitem__(self, idx):
+        x = self.data[idx : idx + self.context_length, :]
+        y = self.data[idx + self.context_length, self.target_idx]
+        return x, y
+
+def load_and_preprocess_data(rte_path=None, weather_path=None, demo=False):
+    """
+    Loads RTE consumption and OMM weather data, merges them, and cleans.
+    For this boilerplate, if demo=True, we generate synthetic data.
+    """
+    if demo or rte_path is None or weather_path is None:
+        print("Using synthetic demo data...")
+        # Generate 1000 hours of synthetic data
+        t = np.arange(2000)
+        consumption = 50000 + 10000 * np.sin(2 * np.pi * t / 24) + 5000 * np.sin(2 * np.pi * t / (24*365)) + np.random.normal(0, 1000, len(t))
+        temperature = 15 + 10 * np.sin(2 * np.pi * (t - 6) / 24) + np.random.normal(0, 2, len(t))
+        solar = np.clip(800 * np.sin(2 * np.pi * (t - 6) / 24), 0, None) + np.random.normal(0, 50, len(t))
+        
+        df = pd.DataFrame({
+            'consumption': consumption, # target
+            'temperature': temperature,
+            'solar_irradiance': solar
+        })
+        return df, 0 # target_idx is 0 ('consumption')
+    
+    # -------------------------------------------------------------
+    # 1. Load RTE data with pandas
+    try:
+        rte_df = pd.read_csv(rte_path, sep=';', parse_dates=['Date', 'Heures'])
+        # Depending on rte data format, we might need robust parsing:
+        # e.g., combining Date and Heures into Datetime
+        rte_df['Datetime'] = pd.to_datetime(rte_df['Date'].astype(str) + ' ' + rte_df['Heures'].astype(str), errors='coerce')
+        rte_df.dropna(subset=['Datetime'], inplace=True)
+    except Exception as e:
+        print(f"Error parsing RTE data: {e}")
+        return None, None
+
+    # 2. Load OMM data
+    try:
+        weather_df = pd.read_csv(weather_path, sep=';', parse_dates=['Date'])
+        weather_df.rename(columns={'Date': 'Datetime'}, inplace=True)
+    except Exception as e:
+        print(f"Error parsing Weather data: {e}")
+        return None, None
+
+    # 3. Merge on Datetime (e.g., hourly/3-hourly mapping)
+    # Often weather is 3-hourly and consumption is half-hourly -> resample to smooth it out (e.g. hourly)
+    rte_df.set_index('Datetime', inplace=True)
+    weather_df.set_index('Datetime', inplace=True)
+    
+    rte_hourly = rte_df.resample('1H').mean()
+    weather_hourly = weather_df.resample('1H').mean()
+    
+    merged_df = pd.merge(rte_hourly, weather_hourly, left_index=True, right_index=True, how='inner')
+    
+    # 4. Handle missing values
+    merged_df.interpolate(method='linear', limit_direction='forward', inplace=True)
+    merged_df.fillna(method='bfill', inplace=True)
+    
+    # Selecting the features dynamically if they exist. 
+    # Usually: RTE has "Consommation", Weather has "Température", "Humidité", etc.
+    # Below is a fallback logic to select numeric columns:
+    numeric_cols = merged_df.select_dtypes(include=[np.number]).columns.tolist()
+    final_df = merged_df[numeric_cols]
+    
+    # Assuming 'Consommation' or 'consumption' is our target index 0. Let's arrange it.
+    target_col = None
+    for col in final_df.columns:
+        if 'consommation' in col.lower() or 'consumption' in col.lower():
+            target_col = col
+            break
+            
+    if target_col is None:
+        target_col = final_df.columns[0] # Pick first if not found
+        
+    cols = [target_col] + [c for c in final_df.columns if c != target_col]
+    final_df = final_df[cols]
+    
+    return final_df, 0
+
+# ==========================================
+# 4. Training and Prediction
+# ==========================================
+def train_model(model, train_loader, val_loader, num_epochs=20, lr=1e-3, device='cpu'):
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    
+    model.to(device)
+    
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss = 0
+        for batch_x, batch_y in train_loader:
+            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            
+            optimizer.zero_grad()
+            pred = model(batch_x)
+            loss = criterion(pred, batch_y)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item() * batch_x.size(0)
+            
+        train_loss /= len(train_loader.dataset)
+        
+        # Validation
+        val_loss = 0
+        model.eval()
+        with torch.no_grad():
+            for batch_x, batch_y in val_loader:
+                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                pred = model(batch_x)
+                loss = criterion(pred, batch_y)
+                val_loss += loss.item() * batch_x.size(0)
+                
+        val_loss /= len(val_loader.dataset)
+        
+        if (epoch+1) % 5 == 0 or epoch == 0:
+            print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f}")
+
+def predict_with_uncertainty(model, dataloader, num_samples=50, device='cpu'):
+    """
+    MC Dropout for getting confidence intervals.
+    We KEEP dropout layers active using train() mode or setting specific modules to train().
+    """
+    model.train() # Enable dropout for MC sampling
+    model.to(device)
+    
+    all_preds = []
+    actuals = []
+    
+    with torch.no_grad():
+        for batch_x, batch_y in dataloader:
+            batch_x = batch_x.to(device)
+            # Run multiple forward passes for the same batch
+            batch_preds = [model(batch_x).cpu().numpy() for _ in range(num_samples)]
+            batch_preds = np.stack(batch_preds, axis=1) # shape: (batch_size, num_samples)
+            
+            all_preds.append(batch_preds)
+            actuals.append(batch_y.numpy())
+            
+    all_preds = np.concatenate(all_preds, axis=0) # (total_samples, num_mc_samples)
+    actuals = np.concatenate(actuals, axis=0)
+    
+    # Calculate statistics
+    mean_preds = np.mean(all_preds, axis=1)
+    std_preds = np.std(all_preds, axis=1)
+    
+    # Using normal distribution quantiles for robust CI if N helps
+    # Or purely empirical percentiles:
+    lower_bound = np.percentile(all_preds, 5, axis=1) # 5th percentile
+    upper_bound = np.percentile(all_preds, 95, axis=1) # 95th percentile
+    
+    return mean_preds, lower_bound, upper_bound, actuals
+
+# ==========================================
+# 5. Main Execution Block
+# ==========================================
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--demo', action='store_true', help='Run on synthetic data')
+    parser.add_argument('--rte_path', type=str, default=None, help='Path to RTE CSV')
+    parser.add_argument('--weather_path', type=str, default=None, help='Path to Weather CSV')
+    parser.add_argument('--epochs', type=int, default=10, help='Training epochs')
+    args = parser.parse_args()
+    
+    # Configuration
+    CONTEXT_LENGTH = 48 # past 48 hours to predict next
+    HIDDEN_SIZE = 64
+    NUM_LAYERS = 2
+    DROPOUT_RATE = 0.2
+    BATCH_SIZE = 64
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # 1. Load Data
+    df, target_idx = load_and_preprocess_data(args.rte_path, args.weather_path, demo=args.demo)
+    if df is None:
+        print("Failed to load data. Exiting.")
+        exit(1)
+        
+    data_array = df.values
+    
+    # Split train/val/test (70/15/15)
+    n = len(data_array)
+    train_data = data_array[:int(n*0.7)]
+    val_data = data_array[int(n*0.7):int(n*0.85)]
+    test_data = data_array[int(n*0.85):]
+    
+    print(f"Data shapes - Train: {train_data.shape}, Val: {val_data.shape}, Test: {test_data.shape}")
+    
+    # Datasets & Loaders
+    train_dataset = TimeSeriesDataset(train_data, CONTEXT_LENGTH, target_idx)
+    val_dataset = TimeSeriesDataset(val_data, CONTEXT_LENGTH, target_idx)
+    test_dataset = TimeSeriesDataset(test_data, CONTEXT_LENGTH, target_idx)
+    
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    
+    # 2. Initialize Model
+    num_features = data_array.shape[1]
+    model = LSTMWithRevIN(
+        num_features=num_features,
+        hidden_size=HIDDEN_SIZE,
+        num_layers=NUM_LAYERS,
+        dropout_rate=DROPOUT_RATE,
+        target_idx=target_idx
+    )
+    
+    # 3. Train Model
+    print("Starting Training...")
+    train_model(model, train_loader, val_loader, num_epochs=args.epochs, device=DEVICE)
+    
+    # 4. Evaluate with Uncertainty (MC Dropout)
+    print("Evaluating on Test Set with MC Dropout...")
+    mean_preds, lower_ci, upper_ci, actuals = predict_with_uncertainty(
+        model, test_loader, num_samples=50, device=DEVICE
+    )
+    
+    # 5. Save Output Matrix
+    results_df = pd.DataFrame({
+        'Actual_Consumption': actuals,
+        'Predicted_Mean': mean_preds,
+        'Lower_CI_5%': lower_ci,
+        'Upper_CI_95%': upper_ci
+    })
+    
+    output_filename = 'demo_predictions_with_ci.csv' if args.demo else 'predictions_with_ci.csv'
+    results_df.to_csv(output_filename, index=False)
+    print(f"Predictions saved to {output_filename}")
+    
+    # Quick plot of first 200 test samples
+    plt.figure(figsize=(12, 6))
+    plt.plot(actuals[:200], label='Actuals', color='black')
+    plt.plot(mean_preds[:200], label='Predicted Mean', color='blue')
+    plt.fill_between(range(200), lower_ci[:200], upper_ci[:200], color='blue', alpha=0.2, label='90% Confidence Interval')
+    plt.legend()
+    plt.title("ST7 Forecasting: Actual vs Predicted (with Confidence Intervals)")
+    plt.xlabel("Time Steps")
+    plt.ylabel("Consumption")
+    plt.tight_layout()
+    plt.savefig('forecast_plot.png')
+    print("Plot saved to forecast_plot.png")
