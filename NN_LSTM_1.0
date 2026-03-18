@@ -7,9 +7,9 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 
-
+# ==========================================
 # 1. Reversible Instance Normalization (RevIN)
-
+# ==========================================
 class RevIN(nn.Module):
     def __init__(self, num_features: int, eps=1e-5, affine=True):
         """
@@ -58,9 +58,9 @@ class RevIN(nn.Module):
         x = x + self.mean
         return x
 
-
+# ==========================================
 # 2. LSTM with RevIN and MC Dropout
-
+# ==========================================
 class LSTMWithRevIN(nn.Module):
     def __init__(self, num_features, hidden_size, num_layers, dropout_rate=0.2, target_idx=0):
         super(LSTMWithRevIN, self).__init__()
@@ -112,9 +112,9 @@ class LSTMWithRevIN(nn.Module):
         
         return pred.squeeze(1).squeeze(1) if pred.dim() > 2 else pred.squeeze(1) # shape: (batch)
 
-
+# ==========================================
 # 3. Data Processing & Dataset
-
+# ==========================================
 class TimeSeriesDataset(Dataset):
     def __init__(self, data, context_length, target_idx):
         """
@@ -255,76 +255,96 @@ def load_and_clean_weather(file_path):
 
 def load_and_preprocess_data(rte_path=None, weather_path=None, demo=False):
     """
-    Loads RTE consumption and OMM weather data, merges them, and cleans.
-    For this boilerplate, if demo=True, we generate synthetic data.
+    Loads electricity consumption (RTE) and weather (OMM) CSV files,
+    merges them on Datetime, and returns a clean numeric DataFrame.
+    If demo=True or paths are missing, generates synthetic data.
     """
     if demo or rte_path is None or weather_path is None:
         print("Using synthetic demo data...")
-        # Generate 1000 hours of synthetic data
         t = np.arange(2000)
         consumption = 50000 + 10000 * np.sin(2 * np.pi * t / 24) + 5000 * np.sin(2 * np.pi * t / (24*365)) + np.random.normal(0, 1000, len(t))
         temperature = 15 + 10 * np.sin(2 * np.pi * (t - 6) / 24) + np.random.normal(0, 2, len(t))
         solar = np.clip(800 * np.sin(2 * np.pi * (t - 6) / 24), 0, None) + np.random.normal(0, 50, len(t))
-        
         df = pd.DataFrame({
-            'consumption': consumption, # target
+            'consumption': consumption,
             'temperature': temperature,
             'solar_irradiance': solar
         })
-        return df, 0 # target_idx is 0 ('consumption')
-    
-  
-    # 1. Load RTE data with pandas
+        return df, 0
+
+    # ------------------------------------------------------------------
+    # 1. Load electricity (RTE) data
+    # ------------------------------------------------------------------
     try:
-        rte_df = pd.read_csv(rte_path, sep=';', parse_dates=['Date', 'Heures'])
-        rte_df['Datetime'] = pd.to_datetime(rte_df['Date'].astype(str) + ' ' + rte_df['Heures'].astype(str), errors='coerce')
+        rte_df = pd.read_csv(rte_path, skiprows=1)  # skip the title row ("France_Electricity_Cleaned")
+        rte_df.columns = rte_df.columns.str.strip()
+        rte_df['Datetime'] = pd.to_datetime(rte_df['Datetime'], errors='coerce')
         rte_df.dropna(subset=['Datetime'], inplace=True)
+        rte_df.set_index('Datetime', inplace=True)
+        rte_df = rte_df.select_dtypes(include=[np.number])
+        print(f"Electricity data loaded: {rte_df.shape[0]} rows, columns: {list(rte_df.columns)}")
     except Exception as e:
-        print(f"Error parsing RTE data: {e}")
+        print(f"Error loading electricity data: {e}")
         return None, None
 
-    # 2. Load OMM data using the custom clean function
+    # ------------------------------------------------------------------
+    # 2. Load weather data
+    # Weather CSV has one row per station per timestamp → average across stations
+    # ------------------------------------------------------------------
     try:
-        # Load custom weather data
-        weather_df = load_and_clean_weather(weather_path)
+        weather_df = pd.read_csv(weather_path, skiprows=1)  # skip title row
+        weather_df.columns = weather_df.columns.str.strip()
+        weather_df['Datetime'] = pd.to_datetime(weather_df['Datetime'], errors='coerce')
+        weather_df.dropna(subset=['Datetime'], inplace=True)
+        # Drop non-numeric station-identifier columns before aggregating
+        weather_df = weather_df.drop(columns=['WMO_Station_ID'], errors='ignore')
+        # Average all numeric columns across stations for each timestamp
+        weather_numeric = weather_df.select_dtypes(include=[np.number])
+        weather_numeric['Datetime'] = weather_df['Datetime']
+        weather_df = weather_numeric.groupby('Datetime').mean()
+        print(f"Weather data loaded: {weather_df.shape[0]} rows, columns: {list(weather_df.columns)}")
     except Exception as e:
-        print(f"Error parsing Weather data: {e}")
+        print(f"Error loading weather data: {e}")
         return None, None
 
-    # 3. Merge on Datetime
-    rte_df.set_index('Datetime', inplace=True)
-    weather_df.set_index('Datetime', inplace=True)
-    
-    rte_hourly = rte_df.resample('1H').mean(numeric_only=True)
-    weather_hourly = weather_df.resample('1H').mean(numeric_only=True)
-    
-    merged_df = pd.merge(rte_hourly, weather_hourly, left_index=True, right_index=True, how='inner')
-    
+    # ------------------------------------------------------------------
+    # 3. Resample both to hourly and merge
+    # ------------------------------------------------------------------
+    rte_hourly = rte_df.resample('1h').mean()
+    weather_hourly = weather_df.resample('1h').mean()
+
+    merged_df = pd.merge(rte_hourly, weather_hourly, left_index=True, right_index=True, how='inner', suffixes=('', '_weather'))
+    print(f"Merged data: {merged_df.shape[0]} rows, {merged_df.shape[1]} columns")
+
+    # ------------------------------------------------------------------
     # 4. Handle missing values
-    merged_df = merged_df.interpolate(method='linear', limit_direction='forward')
-    merged_df = merged_df.bfill()
-    
-    # Return numeric columns and locate target
-    numeric_cols = merged_df.select_dtypes(include=[np.number]).columns.tolist()
-    final_df = merged_df[numeric_cols]
-    
+    # ------------------------------------------------------------------
+    merged_df = merged_df.interpolate(method='linear', limit_direction='both')
+    merged_df = merged_df.ffill().bfill()
+    merged_df.dropna(inplace=True)
+
+    # ------------------------------------------------------------------
+    # 5. Put the consumption column first (it's the target)
+    # ------------------------------------------------------------------
     target_col = None
-    for col in final_df.columns:
-        if 'consommation' in col.lower() or 'consumption' in col.lower():
+    for col in merged_df.columns:
+        if 'consumption' in col.lower() or 'consommation' in col.lower():
             target_col = col
             break
-            
     if target_col is None:
-        target_col = final_df.columns[0]
-        
-    cols = [target_col] + [c for c in final_df.columns if c != target_col]
-    final_df = final_df[cols]
-    
+        target_col = merged_df.columns[0]
+        print(f"Warning: no obvious consumption column found, using '{target_col}' as target.")
+    else:
+        print(f"Target column: '{target_col}'")
+
+    cols = [target_col] + [c for c in merged_df.columns if c != target_col]
+    final_df = merged_df[cols]
+
     return final_df, 0
 
-
+# ==========================================
 # 4. Training and Prediction
-
+# ==========================================
 def train_model(model, train_loader, val_loader, num_epochs=20, lr=1e-3, device='cpu'):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -397,9 +417,9 @@ def predict_with_uncertainty(model, dataloader, num_samples=50, device='cpu'):
     
     return mean_preds, lower_bound, upper_bound, actuals
 
-
+# ==========================================
 # 5. Main Execution Block
-
+# ==========================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--demo', action='store_true', help='Run on synthetic data')
@@ -417,7 +437,17 @@ if __name__ == "__main__":
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # 1. Load Data
-    df, target_idx = load_and_preprocess_data(args.rte_path, args.weather_path, demo=args.demo)
+    # Resolve paths relative to this script's directory so the CSVs are found
+    # regardless of where the script is launched from.
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _rte_path = args.rte_path or os.path.join(_script_dir, "France_Electricity_Cleaned.csv")
+    _weather_path = args.weather_path or os.path.join(_script_dir, "France_Weather_Cleaned.csv")
+
+    df, target_idx = load_and_preprocess_data(
+        rte_path=_rte_path,
+        weather_path=_weather_path,
+        demo=args.demo
+    )
     if df is None:
         print("Failed to load data. Exiting.")
         exit(1)
